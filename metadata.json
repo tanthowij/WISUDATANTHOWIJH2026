@@ -1,0 +1,6 @@
+{
+  "name": "Wisuda by Tanthowi - Photo Selection & Delivery",
+  "description": "Sistem galeri foto wisuda online untuk pemilihan foto klien, manajemen editing, revisi, kolase Instagram story, dan pengiriman berkas terintegrasi Google Drive.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -24,6 +24,8 @@ import {
   AlertCircle,
   HelpCircle,
   CheckCircle2,
+  HardDrive,
+  ExternalLink,
 } from 'lucide-react';
 import { ClientProject, Photo } from '../../types';
 import { AppStorage } from '../../lib/storage';
@@ -179,6 +181,21 @@ export const ClientDashboard: React.FC<ClientDashboardProps> = ({ client, onRefr
             <p className="text-xs md:text-sm text-neutral-400">
               {client.faculty} • {client.university} — Acara: {new Date(client.eventDate).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}
             </p>
+            {client.googleDriveUrl && (
+              <div className="pt-1.5 flex items-center gap-2">
+                <a
+                  href={client.googleDriveFolders?.rawPhotosFolderUrl || client.googleDriveUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-neutral-950 border border-neutral-700/80 text-[11px] font-mono text-emerald-400 hover:text-emerald-300 hover:border-emerald-500/50 transition"
+                  title="Buka folder foto di Google Drive"
+                >
+                  <HardDrive className="w-3.5 h-3.5" />
+                  <span>Folder Google Drive: 01_RAW_PHOTOS</span>
+                  <ExternalLink className="w-3 h-3 text-neutral-400" />
+                </a>
+              </div>
+            )}
           </div>
 
           {/* Quota & Status Pill */}
@@ -405,6 +422,12 @@ export const ClientDashboard: React.FC<ClientDashboardProps> = ({ client, onRefr
                       {/* Photo Sequence Badge */}
                       <div className="absolute top-2 left-2 bg-black/75 backdrop-blur-md px-2 py-0.5 rounded text-[10px] font-mono text-white border border-white/10">
                         #{String(photo.sequenceNumber).padStart(3, '0')}
+                      </div>
+
+                      {/* GDrive Origin Indicator */}
+                      <div className="absolute top-2 right-2 bg-black/80 backdrop-blur-md px-1.5 py-0.5 rounded text-[9px] font-mono text-emerald-400 border border-emerald-500/25 flex items-center gap-1 shadow-sm">
+                        <HardDrive className="w-2.5 h-2.5" />
+                        <span>GDrive</span>
                       </div>
 
                       {/* Enlarge Hint */}
@@ -799,6 +822,20 @@ export const ClientDashboard: React.FC<ClientDashboardProps> = ({ client, onRefr
                   <span>Pilih Foto Ini</span>
                 )}
               </button>
+
+              {/* View in Google Drive link */}
+              <a
+                href={lightboxPhoto.driveViewUrl || client.googleDriveUrl || 'https://drive.google.com'}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-2.5 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-mono flex items-center gap-1.5 border border-neutral-700 transition"
+                title="Buka file asli di Google Drive"
+              >
+                <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="hidden sm:inline">Buka di GDrive</span>
+                <ExternalLink className="w-3 h-3 text-neutral-400" />
+              </a>
+
               <button
                 onClick={() => setLightboxPhoto(null)}
                 className="w-8 h-8 rounded-full bg-neutral-800 hover:bg-neutral-700 text-neutral-300 flex items-center justify-center transition"

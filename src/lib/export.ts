@@ -26,6 +26,7 @@ export function exportSelectionToExcel(client: ClientProject): void {
     'Status': photo.stage === 'FINAL' ? 'Final Ready' : photo.stage === 'EDIT_PROCESS' ? 'Editing' : 'Selected for Edit',
     'Tanggal Pemilihan': formattedDate,
     'Keterangan': photo.notes || client.clientNotes || 'Pilihan utama wisuda',
+    'Link / ID Google Drive': photo.driveViewUrl || photo.driveFileId || '-',
   }));
 
   // Create worksheet
@@ -37,7 +38,8 @@ export function exportSelectionToExcel(client: ClientProject): void {
     { wch: 35 }, // Nama File
     { wch: 20 }, // Status
     { wch: 24 }, // Tanggal Pemilihan
-    { wch: 45 }, // Keterangan
+    { wch: 40 }, // Keterangan
+    { wch: 50 }, // Link / ID Google Drive
   ];
 
   // Create workbook
@@ -51,6 +53,7 @@ export function exportSelectionToExcel(client: ClientProject): void {
     { Properti: 'Universitas', Nilai: client.university },
     { Properti: 'Fakultas', Nilai: client.faculty },
     { Properti: 'Paket', Nilai: client.packageType },
+    { Properti: 'Link Google Drive Klien', Nilai: client.googleDriveUrl || '-' },
     { Properti: 'Total Foto Dipilih', Nilai: selectedPhotos.length },
     { Properti: 'Batas Kuota', Nilai: client.quotaMaxSelected },
     { Properti: 'Tanggal Submit', Nilai: formattedDate },

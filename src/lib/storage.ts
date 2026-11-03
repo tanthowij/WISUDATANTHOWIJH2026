@@ -6,8 +6,8 @@
 import { ClientProject, Photo, PhotoComment, StoryCollagePage, User, WorkflowStatus } from '../types';
 import { INITIAL_CLIENTS } from './mockData';
 
-const CLIENTS_STORAGE_KEY = 'wisuda_tanthowi_clients_v2';
-const USER_STORAGE_KEY = 'wisuda_tanthowi_active_user_v2';
+const CLIENTS_STORAGE_KEY = 'wisuda_tanthowi_clients_v3';
+const USER_STORAGE_KEY = 'wisuda_tanthowi_active_user_v3';
 
 export class AppStorage {
   private static clientsCache: ClientProject[] | null = null;

@@ -70,7 +70,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [newClientFaculty, setNewClientFaculty] = useState('Fakultas Ekonomi & Bisnis');
   const [newClientPackage, setNewClientPackage] = useState('Paket Signature Wisuda (25 Foto Edit + All RAW + Kolase IG)');
   const [newClientQuota, setNewClientQuota] = useState(25);
+  const [newClientDriveUrl, setNewClientDriveUrl] = useState('');
   const [isCreatingClient, setIsCreatingClient] = useState(false);
+
+  // Google Drive Per-Client Link Management States
+  const [driveFolderInput, setDriveFolderInput] = useState('');
+  const [rawFolderInput, setRawFolderInput] = useState('');
+  const [selectedFolderInput, setSelectedFolderInput] = useState('');
+  const [editFolderInput, setEditFolderInput] = useState('');
+  const [finalFolderInput, setFinalFolderInput] = useState('');
+  const [isSyncingDrive, setIsSyncingDrive] = useState(false);
+  const [syncPhotoCount, setSyncPhotoCount] = useState<number>(250);
+  const [showBatchLinksModal, setShowBatchLinksModal] = useState(false);
+  const [batchLinksText, setBatchLinksText] = useState('');
 
   // Upload Simulation / Real
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
@@ -80,6 +92,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const activeClient = useMemo(() => {
     return clients.find(c => c.id === selectedClientId) || clients[0];
   }, [clients, selectedClientId]);
+
+  // Sync inputs when active client changes
+  React.useEffect(() => {
+    if (activeClient) {
+      setDriveFolderInput(activeClient.googleDriveUrl || '');
+      setRawFolderInput(activeClient.googleDriveFolders?.rawPhotosFolderUrl || '');
+      setSelectedFolderInput(activeClient.googleDriveFolders?.selectedPhotosFolderUrl || '');
+      setEditFolderInput(activeClient.googleDriveFolders?.editProcessFolderUrl || '');
+      setFinalFolderInput(activeClient.googleDriveFolders?.finalPhotosFolderUrl || '');
+    }
+  }, [activeClient]);
 
   // High level metrics
   const metrics = useMemo(() => {
@@ -137,6 +160,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       // Create Google Drive standardized folder structure
       const driveFolders = await GoogleDriveService.createClientFolderHierarchy(clientCode);
 
+      // If admin pasted a custom Google Drive link for this client
+      const finalDriveUrl = newClientDriveUrl.trim() || driveFolders.clientFolderUrl;
+
       const newProject: ClientProject = {
         id: `client_${Date.now()}`,
         code: clientCode,
@@ -151,18 +177,36 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         packageType: newClientPackage,
         quotaMaxSelected: newClientQuota,
         currentStatus: 'WAITING_FOR_SELECTION',
-        googleDriveUrl: driveFolders.clientFolderUrl,
-        googleDriveFolders: driveFolders,
+        googleDriveUrl: finalDriveUrl,
+        googleDriveFolders: {
+          ...driveFolders,
+          clientFolderUrl: finalDriveUrl,
+        },
         activityLog: [
           {
             id: `act_${Date.now()}`,
             timestamp: new Date().toISOString(),
             actor: 'Admin Studio',
-            action: `Akun klien ${newClientName} dibuat. Struktur folder Google Drive diinisialisasi.`,
+            action: `Akun klien ${newClientName} dibuat. Folder Google Drive terhubung: ${finalDriveUrl}`,
           },
         ],
-        photos: [], // Start clean or let admin upload
+        photos: [], // Start clean or let admin upload / sync
       };
+
+      // If link was provided, auto-sync photos right away
+      if (newClientDriveUrl.trim()) {
+        try {
+          const syncRes = await GoogleDriveService.fetchPhotosFromDriveFolder(
+            newClientDriveUrl.trim(),
+            newProject.id,
+            cleanName,
+            250
+          );
+          newProject.photos = syncRes.photos;
+        } catch (e) {
+          console.warn('Auto sync on create skipped', e);
+        }
+      }
 
       AppStorage.addClient(newProject);
       setShowCreateClientModal(false);
@@ -172,11 +216,129 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       // Reset form
       setNewClientName('');
       setNewClientUsername('');
+      setNewClientDriveUrl('');
+      setUploadNotice(`Klien ${newClientName} berhasil dibuat dengan folder Google Drive.`);
+      setTimeout(() => setUploadNotice(null), 3000);
     } catch (err: any) {
       console.error(err);
     } finally {
       setIsCreatingClient(false);
     }
+  };
+
+  // Save custom Google Drive folder links for active client
+  const handleSaveDriveUrls = () => {
+    if (!activeClient) return;
+    const cleanMain = driveFolderInput.trim();
+    const folderId = GoogleDriveService.extractDriveFolderId(cleanMain);
+
+    activeClient.googleDriveUrl = cleanMain || activeClient.googleDriveUrl;
+    activeClient.googleDriveFolders = {
+      ...activeClient.googleDriveFolders,
+      clientFolderUrl: cleanMain || activeClient.googleDriveFolders?.clientFolderUrl,
+      rawPhotosFolderUrl: rawFolderInput.trim() || activeClient.googleDriveFolders?.rawPhotosFolderUrl,
+      selectedPhotosFolderUrl: selectedFolderInput.trim() || activeClient.googleDriveFolders?.selectedPhotosFolderUrl,
+      editProcessFolderUrl: editFolderInput.trim() || activeClient.googleDriveFolders?.editProcessFolderUrl,
+      finalPhotosFolderUrl: finalFolderInput.trim() || activeClient.googleDriveFolders?.finalPhotosFolderUrl,
+      clientFolderId: folderId || activeClient.googleDriveFolders?.clientFolderId,
+    };
+
+    activeClient.activityLog.unshift({
+      id: `act_${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      actor: 'Admin Studio',
+      action: 'Link folder Google Drive klien diperbarui',
+      detail: cleanMain,
+    });
+
+    AppStorage.updateClient(activeClient);
+    setUploadNotice('Link Google Drive klien berhasil disimpan!');
+    setTimeout(() => setUploadNotice(null), 3000);
+    onRefresh();
+  };
+
+  // Sync / Import Photos directly from Google Drive Folder Link
+  const handleSyncPhotosFromDrive = async () => {
+    if (!activeClient) return;
+    const targetFolderLink = rawFolderInput.trim() || driveFolderInput.trim() || activeClient.googleDriveUrl;
+    if (!targetFolderLink) {
+      alert('Silakan masukkan Link Folder Google Drive terlebih dahulu.');
+      return;
+    }
+
+    setIsSyncingDrive(true);
+    try {
+      const cleanPrefix = activeClient.name.split(' ')[0].toUpperCase().replace(/[^A-Z]/g, '');
+      const result = await GoogleDriveService.fetchPhotosFromDriveFolder(
+        targetFolderLink,
+        activeClient.id,
+        cleanPrefix,
+        syncPhotoCount
+      );
+
+      // Preserve existing selected state if names match
+      const existingSelectedNames = new Set(
+        activeClient.photos.filter(p => p.selected).map(p => p.originalName)
+      );
+
+      const mergedPhotos = result.photos.map(p => ({
+        ...p,
+        selected: existingSelectedNames.has(p.originalName),
+        stage: existingSelectedNames.has(p.originalName) ? ('SELECTED' as const) : ('RAW' as const),
+      }));
+
+      activeClient.photos = mergedPhotos;
+      activeClient.googleDriveUrl = result.folderUrl;
+      if (!activeClient.googleDriveFolders) {
+        activeClient.googleDriveFolders = {};
+      }
+      activeClient.googleDriveFolders.clientFolderUrl = result.folderUrl;
+      activeClient.googleDriveFolders.rawPhotosFolderUrl = targetFolderLink;
+
+      activeClient.activityLog.unshift({
+        id: `act_${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        actor: 'Admin Studio',
+        action: `Sinkronisasi ${mergedPhotos.length} foto dari Google Drive: ${targetFolderLink}`,
+      });
+
+      AppStorage.updateClient(activeClient);
+      setUploadNotice(`Berhasil sinkronisasi ${mergedPhotos.length} foto dari Google Drive ke galeri klien!`);
+      setTimeout(() => setUploadNotice(null), 4000);
+      onRefresh();
+    } catch (err: any) {
+      alert(`Gagal sinkronisasi dari Google Drive: ${err.message}`);
+    } finally {
+      setIsSyncingDrive(false);
+    }
+  };
+
+  // Import batch pasted links
+  const handleImportBatchLinks = () => {
+    if (!activeClient || !batchLinksText.trim()) return;
+    const cleanPrefix = activeClient.name.split(' ')[0].toUpperCase().replace(/[^A-Z]/g, '');
+    const startSeq = activeClient.photos.length + 1;
+    const parsed = GoogleDriveService.parseBatchDriveLinks(
+      activeClient.id,
+      batchLinksText,
+      cleanPrefix,
+      startSeq
+    );
+
+    activeClient.photos = [...activeClient.photos, ...parsed];
+    activeClient.activityLog.unshift({
+      id: `act_${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      actor: 'Admin Studio',
+      action: `Menambahkan ${parsed.length} foto dari link Google Drive batch`,
+    });
+
+    AppStorage.updateClient(activeClient);
+    setShowBatchLinksModal(false);
+    setBatchLinksText('');
+    setUploadNotice(`Berhasil menambahkan ${parsed.length} foto dari batch link Google Drive!`);
+    setTimeout(() => setUploadNotice(null), 3000);
+    onRefresh();
   };
 
   // Open WhatsApp Modal
@@ -442,6 +604,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
               {/* Action Buttons for this client */}
               <div className="flex items-center gap-2 flex-wrap">
+                {activeClient.googleDriveUrl && (
+                  <a
+                    href={activeClient.googleDriveUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3 py-2 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-neutral-300 text-xs font-mono transition flex items-center gap-1.5 border border-neutral-700"
+                    title="Buka Folder Google Drive Klien"
+                  >
+                    <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Folder GDrive</span>
+                    <ExternalLink className="w-3 h-3 text-neutral-400" />
+                  </a>
+                )}
+
                 <button
                   onClick={() => handleOpenWhatsApp(activeClient)}
                   className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium transition flex items-center gap-1.5 shadow"
@@ -509,12 +685,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 onClick={() => setClientDetailTab('drive')}
                 className={`px-3 py-2 rounded-lg font-medium transition flex items-center gap-1.5 ${
                   clientDetailTab === 'drive'
-                    ? 'bg-neutral-800 text-white border border-neutral-700'
+                    ? 'bg-neutral-800 text-amber-400 border border-amber-500/50'
                     : 'text-neutral-400 hover:text-white'
                 }`}
               >
                 <FolderTree className="w-3.5 h-3.5 text-amber-400" />
-                Folder Google Drive
+                Link Google Drive & Tarik Foto
               </button>
             </div>
 
@@ -744,53 +920,236 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               />
             )}
 
-            {/* SUBTAB 5: GOOGLE DRIVE FOLDERS */}
+            {/* SUBTAB 5: GOOGLE DRIVE LINK & PHOTO SYNC */}
             {clientDetailTab === 'drive' && (
               <div className="space-y-6">
-                <div className="p-5 bg-neutral-900 rounded-xl border border-neutral-800 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <FolderTree className="w-5 h-5 text-amber-400" />
+                {/* Section 1: Main GDrive Link & One-Click Photo Pull */}
+                <div className="p-6 bg-neutral-900 rounded-2xl border border-neutral-800 space-y-5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-neutral-800 pb-4">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+                        <HardDrive className="w-5 h-5" />
+                      </div>
                       <div>
-                        <h3 className="text-sm font-semibold text-white">Struktur Folder Google Drive Terpisah</h3>
+                        <h3 className="text-sm font-semibold text-white">
+                          Sumber Foto dari Link Google Drive Klien
+                        </h3>
                         <p className="text-xs text-neutral-400">
-                          Sesuai format resmi WISUDA BY TANTHOWI. File tidak dicampur antar klien.
+                          Masukkan URL folder Google Drive klien untuk menarik foto-foto wisuda ke galeri pemilihan.
                         </p>
                       </div>
                     </div>
 
-                    <a
-                      href={activeClient.googleDriveUrl || 'https://drive.google.com'}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-3.5 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-medium flex items-center gap-1.5 border border-neutral-700"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      Buka Google Drive
-                    </a>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          setDriveFolderInput(`https://drive.google.com/drive/folders/1Tanthowi_${activeClient.code}`);
+                          setRawFolderInput(`https://drive.google.com/drive/folders/1Tanthowi_${activeClient.code}_01_RAW`);
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-mono transition"
+                        title="Isi dengan contoh URL Google Drive"
+                      >
+                        Contoh Link Preset
+                      </button>
+                      {activeClient.googleDriveUrl && (
+                        <a
+                          href={activeClient.googleDriveUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-medium flex items-center gap-1.5 border border-neutral-700"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5 text-amber-400" />
+                          <span>Buka di Google Drive</span>
+                        </a>
+                      )}
+                    </div>
                   </div>
 
-                  {/* Folder Structure Tree */}
-                  <div className="font-mono text-xs text-neutral-300 bg-neutral-950 p-4 rounded-xl border border-neutral-800 space-y-2">
-                    <div className="text-amber-400 font-bold flex items-center gap-2">
-                      <HardDrive className="w-4 h-4" />
-                      WISUDA BY TANTHOWI /
-                    </div>
-                    <div className="pl-6 border-l border-neutral-800 space-y-1.5">
-                      <div className="text-white font-semibold flex items-center gap-2">
-                        <span>📁</span> {activeClient.code}
+                  {/* Form Inputs for Google Drive Link */}
+                  <div className="space-y-4">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs font-medium text-neutral-300">
+                          Link Folder Utama Klien di Google Drive
+                        </label>
+                        <span className="text-[11px] text-amber-400 font-mono">
+                          ID: {GoogleDriveService.extractDriveFolderId(driveFolderInput) || 'Belum diisi'}
+                        </span>
                       </div>
-                      <div className="pl-6 border-l border-neutral-800 space-y-1 text-neutral-400">
-                        <div>📁 01_RAW_PHOTOS ({activeClient.photos.length} files)</div>
-                        <div>📁 02_SELECTED_PHOTOS ({activeClient.photos.filter(p => p.selected).length} files)</div>
-                        <div>📁 03_EDIT_PROCESS</div>
-                        <div>
-                          📁 04_REVISION /
-                          <div className="pl-6 border-l border-neutral-800">📁 REVISION_01</div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          placeholder="https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOpQrStUvWxYz..."
+                          value={driveFolderInput}
+                          onChange={e => setDriveFolderInput(e.target.value)}
+                          className="flex-1 px-3 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-white text-xs focus:border-amber-400 outline-none font-mono"
+                        />
+                        <button
+                          onClick={handleSaveDriveUrls}
+                          className="px-4 py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-semibold transition border border-neutral-700 shrink-0"
+                        >
+                          Simpan Link
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Pull Photos Action Box */}
+                    <div className="p-4 bg-neutral-950/80 rounded-xl border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                          <span className="text-xs font-semibold text-white">
+                            Tarik Foto dari Link Folder Google Drive ke Galeri Klien
+                          </span>
                         </div>
+                        <p className="text-[11px] text-neutral-400 mt-0.5">
+                          Sistem akan mengambil foto dari link di atas dan menampilkannya di halaman klien untuk dipilih.
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={syncPhotoCount}
+                          onChange={e => setSyncPhotoCount(Number(e.target.value))}
+                          className="px-2.5 py-2 bg-neutral-900 border border-neutral-700 rounded-lg text-white text-xs font-mono outline-none"
+                        >
+                          <option value={50}>50 Foto</option>
+                          <option value={100}>100 Foto</option>
+                          <option value={250}>250 Foto (Standar)</option>
+                        </select>
+
+                        <button
+                          onClick={handleSyncPhotosFromDrive}
+                          disabled={isSyncingDrive}
+                          className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-black text-xs font-semibold transition shadow flex items-center gap-1.5 shrink-0"
+                        >
+                          <Sparkles className="w-3.5 h-3.5" />
+                          <span>{isSyncingDrive ? 'Menarik Foto...' : 'Tarik Foto Sekarang'}</span>
+                        </button>
+
+                        <button
+                          onClick={() => setShowBatchLinksModal(true)}
+                          className="px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-medium transition border border-neutral-700 shrink-0"
+                        >
+                          Batch Link Text
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section 2: Subfolder Links Management */}
+                <div className="p-6 bg-neutral-900 rounded-2xl border border-neutral-800 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-xs font-semibold text-white font-mono uppercase tracking-wider">
+                        Link Spesifik Subfolder per Kategori
+                      </h4>
+                      <p className="text-[11px] text-neutral-400">
+                        Atur link langsung ke masing-masing subfolder di Google Drive.
+                      </p>
+                    </div>
+                    <button
+                      onClick={handleSaveDriveUrls}
+                      className="px-3.5 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-medium transition border border-neutral-700"
+                    >
+                      Simpan Semua Subfolder
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                    <div>
+                      <label className="text-neutral-400 block mb-1 font-mono text-[11px]">
+                        📁 01_RAW_PHOTOS (Foto Kamera Asli):
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Link folder RAW..."
+                        value={rawFolderInput}
+                        onChange={e => setRawFolderInput(e.target.value)}
+                        className="w-full px-3 py-2 bg-neutral-950 border border-neutral-800 rounded-lg text-white font-mono text-[11px] focus:border-amber-400 outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-neutral-400 block mb-1 font-mono text-[11px]">
+                        📁 02_SELECTED_PHOTOS (Pilihan Klien):
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Link folder Selected..."
+                        value={selectedFolderInput}
+                        onChange={e => setSelectedFolderInput(e.target.value)}
+                        className="w-full px-3 py-2 bg-neutral-950 border border-neutral-800 rounded-lg text-white font-mono text-[11px] focus:border-amber-400 outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-neutral-400 block mb-1 font-mono text-[11px]">
+                        📁 03_EDIT_PROCESS (Proses Retouch):
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Link folder Edit..."
+                        value={editFolderInput}
+                        onChange={e => setEditFolderInput(e.target.value)}
+                        className="w-full px-3 py-2 bg-neutral-950 border border-neutral-800 rounded-lg text-white font-mono text-[11px] focus:border-amber-400 outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-neutral-400 block mb-1 font-mono text-[11px]">
+                        📁 05_FINAL_PHOTOS (Hasil Final):
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Link folder Final..."
+                        value={finalFolderInput}
+                        onChange={e => setFinalFolderInput(e.target.value)}
+                        className="w-full px-3 py-2 bg-neutral-950 border border-neutral-800 rounded-lg text-white font-mono text-[11px] focus:border-amber-400 outline-none"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section 3: Folder Hierarchy Visualizer */}
+                <div className="p-5 bg-neutral-950 rounded-2xl border border-neutral-800 space-y-3 font-mono text-xs">
+                  <div className="text-amber-400 font-bold flex items-center justify-between">
+                    <span className="flex items-center gap-2">
+                      <FolderTree className="w-4 h-4" />
+                      STRUKTUR RESMI GOOGLE DRIVE
+                    </span>
+                    <span className="text-[10px] text-neutral-400 uppercase font-sans">
+                      Terisolasi per Klien (Tidak Dicampur)
+                    </span>
+                  </div>
+
+                  <div className="pl-4 border-l border-neutral-800 space-y-1.5 text-neutral-300">
+                    <div>📁 WISUDA BY TANTHOWI /</div>
+                    <div className="pl-4 border-l border-neutral-800 space-y-1">
+                      <div className="text-white font-semibold">📁 {activeClient.code}</div>
+                      <div className="pl-4 border-l border-neutral-800 space-y-1 text-neutral-400 text-[11px]">
+                        <div className="flex items-center justify-between">
+                          <span>📁 01_RAW_PHOTOS ({activeClient.photos.length} foto)</span>
+                          {rawFolderInput && (
+                            <a href={rawFolderInput} target="_blank" rel="noreferrer" className="text-amber-400 hover:underline">
+                              Buka GDrive ↗
+                            </a>
+                          )}
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span>📁 02_SELECTED_PHOTOS ({activeClient.photos.filter(p => p.selected).length} dipilih)</span>
+                          {selectedFolderInput && (
+                            <a href={selectedFolderInput} target="_blank" rel="noreferrer" className="text-amber-400 hover:underline">
+                              Buka GDrive ↗
+                            </a>
+                          )}
+                        </div>
+                        <div>📁 03_EDIT_PROCESS</div>
+                        <div>📁 04_REVISION / REVISION_01</div>
                         <div>📁 05_FINAL_PHOTOS</div>
-                        <div>📁 06_COLLAGE (Instagram Story 9:16)</div>
-                        <div>📁 07_DOWNLOAD (ZIP Archive)</div>
+                        <div>📁 06_COLLAGE</div>
+                        <div>📁 07_DOWNLOAD</div>
                       </div>
                     </div>
                   </div>
@@ -904,6 +1263,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 />
               </div>
 
+              <div>
+                <label className="text-neutral-300 block mb-1">
+                  Link Folder Google Drive Klien (Bisa diisi link folder yang sudah ada):
+                </label>
+                <input
+                  type="text"
+                  placeholder="https://drive.google.com/drive/folders/..."
+                  value={newClientDriveUrl}
+                  onChange={e => setNewClientDriveUrl(e.target.value)}
+                  className="w-full px-3 py-2 bg-neutral-950 border border-neutral-800 rounded-lg text-white text-xs focus:border-amber-400 outline-none font-mono"
+                />
+                <span className="text-[10px] text-neutral-500 mt-1 block">
+                  Jika diisi, sistem akan otomatis menautkan folder dan menyinkronkan foto dari Google Drive tersebut.
+                </span>
+              </div>
+
               <div className="p-3 bg-neutral-950 rounded-xl border border-neutral-800 text-[11px] text-neutral-400">
                 Sistem akan secara otomatis membuat folder Google Drive khusus:
                 <br />
@@ -927,6 +1302,52 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 2: INPUT BATCH LINK GOOGLE DRIVE */}
+      {showBatchLinksModal && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl max-w-lg w-full p-6 space-y-4 animate-in zoom-in-95">
+            <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
+              <div className="flex items-center gap-2">
+                <HardDrive className="w-4 h-4 text-amber-400" />
+                <h3 className="text-sm font-semibold text-white">Input Batch Link Foto Google Drive</h3>
+              </div>
+              <button onClick={() => setShowBatchLinksModal(false)} className="text-neutral-400 hover:text-white">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-neutral-400">
+              Tempel daftar URL Google Drive foto (satu link per baris). Sistem akan otomatis mengubahnya menjadi foto pilihan galeri klien.
+            </p>
+
+            <textarea
+              rows={8}
+              placeholder={`https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUvWxYz/view\nhttps://drive.google.com/file/d/2BcDeFgHiJkLmNoPqRsTuVwXyZa/view`}
+              value={batchLinksText}
+              onChange={e => setBatchLinksText(e.target.value)}
+              className="w-full p-3 bg-neutral-950 border border-neutral-800 rounded-xl text-white font-mono text-[11px] focus:border-amber-400 outline-none"
+            />
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-800">
+              <button
+                type="button"
+                onClick={() => setShowBatchLinksModal(false)}
+                className="px-4 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-medium"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={handleImportBatchLinks}
+                className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-black text-xs font-semibold shadow"
+              >
+                Tambahkan ke Galeri Klien
+              </button>
+            </div>
           </div>
         </div>
       )}

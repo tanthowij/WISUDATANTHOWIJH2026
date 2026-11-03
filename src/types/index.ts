@@ -49,7 +49,11 @@ export interface Photo {
   stage: 'RAW' | 'SELECTED' | 'EDIT_PROCESS' | 'REVISION' | 'FINAL';
   selected?: boolean;
   uploadedAt: string;
+  // Google Drive Link integration
   driveFileId?: string;
+  driveViewUrl?: string;
+  driveThumbnailUrl?: string;
+  isDriveSource?: boolean;
   
   // Editing & Comparison
   editedUrl?: string;
@@ -62,13 +66,21 @@ export interface Photo {
 export interface DriveFolderStructure {
   rootFolderId?: string;
   clientFolderId?: string;
+  clientFolderUrl?: string;
   rawPhotosFolderId?: string;
+  rawPhotosFolderUrl?: string;
   selectedPhotosFolderId?: string;
+  selectedPhotosFolderUrl?: string;
   editProcessFolderId?: string;
+  editProcessFolderUrl?: string;
   revisionFolderId?: string;
+  revisionFolderUrl?: string;
   finalPhotosFolderId?: string;
+  finalPhotosFolderUrl?: string;
   collageFolderId?: string;
+  collageFolderUrl?: string;
   downloadFolderId?: string;
+  downloadFolderUrl?: string;
 }
 
 export interface ActivityLogEntry {
